@@ -1,4 +1,3 @@
 (tests
-  (names simple optim)
-  (libraries z3overlay)
-)
+ (names simple optim)
+ (libraries z3overlay))

@@ -1,8 +1,7 @@
 (library
- (name        z3overlay)
+ (name z3overlay)
  (public_name z3overlay)
  (libraries z3 zarith base)
- (preprocess (pps ppx_compare ppx_let))
- (c_library_flags -lstdc++)
-)
-
+ (preprocess
+  (pps ppx_compare ppx_let ppx_sexp_conv))
+ (c_library_flags -lstdc++))
