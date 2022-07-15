@@ -1,4 +1,4 @@
-open! Base
+open! Core
 open! Z3
 
 module type Context = sig
@@ -14,35 +14,72 @@ module Make (C : Context) = struct
       | Real : (Q.t, [ `Real ]) t
       | Bool : (bool, [ `Bool ]) t
       | Pseudo_bool : (bool, [ `Pseudo_bool ]) t
+      | Tuple_2 :
+          ('a1, 'b1) t * ('a2, 'b2) t
+          -> ('a1 * 'a2, [ `Tuple of 'b1 * 'b2 ]) t
+      | Array :
+          ('a1, 'b1) t * ('a2, 'b2) t
+          -> ('a1 -> 'a2, [ `Array of 'b1 * 'b2 ]) t
 
-    let sexp_of_t : type a b. (a, b) t -> Sexp.t = function
+    let rec sexp_of_t : type a b. (a, b) t -> Sexp.t = function
       | Int -> Atom "Int"
       | Real -> Atom "Real"
       | Bool -> Atom "Bool"
       | Pseudo_bool -> Atom "Pseudo_bool"
+      | Tuple_2 (t, t') -> List [ Atom "Tuple_2"; sexp_of_t t; sexp_of_t t' ]
+      | Array (t, t') -> List [ Atom "Array"; sexp_of_t t; sexp_of_t t' ]
 
-    let to_sort : type a b. (a, b) t -> Sort.sort = function
+    let rec to_sort : type a b. (a, b) t -> Sort.sort = function
       | Int -> Arithmetic.Integer.mk_sort ctx
       | Pseudo_bool -> Arithmetic.Integer.mk_sort ctx
       | Bool -> Boolean.mk_sort ctx
       | Real -> Arithmetic.Real.mk_sort ctx
+      | Tuple_2 (t, t') ->
+          let s = to_sort t in
+          let s' = to_sort t' in
+          Z3.Tuple.mk_sort ctx (Symbol.mk_string ctx "t2")
+            [ Sort.get_name s; Sort.get_name s' ]
+            [ s; s' ]
+      | Array (t, t') ->
+          let s = to_sort t in
+          let s' = to_sort t' in
+          Z3.Z3Array.mk_sort ctx s s'
   end
 
   module Term = struct
     type ('a, 'b) t = ('a, 'b) Type.t * Z3.Expr.expr
 
     let simplify ?params (t, x) = (t, Expr.simplify x params)
-    let const t n = (t, Expr.mk_const_s ctx n (Type.to_sort t))
+    let const t n = (t, Expr.mk_fresh_const ctx n (Type.to_sort t))
     let ( = ) (_, x) (_, y) = (Type.Bool, Boolean.mk_eq ctx x y)
     let to_string (_, x) = Z3.Expr.to_string x
     let raw (_, x) = x
     let raws = List.map ~f:raw
     let distinct xs = (Type.Bool, Boolean.mk_distinct ctx (raws xs))
     let cast s (_, e) = (s, e)
+
+    let mk_quantifier is_forall t f =
+      let s = Type.to_sort t in
+      let n = Z3.Symbol.mk_int ctx 0 in
+      let _, body = f (t, Z3.Expr.mk_const ctx n s) in
+      let q =
+        Z3.Quantifier.mk_quantifier ctx is_forall [ s ] [ n ] body None [] [] None
+          None
+        |> Z3.Quantifier.expr_of_quantifier
+      in
+      (Type.Bool, q)
+
+    let forall t f = mk_quantifier true t f
+    let exists t f = mk_quantifier false t f
   end
 
   module Status = struct
-    type t = Unsat | Sat of Model.model option Lazy.t | Unknown of string
+    type model = Model.model
+
+    let sexp_of_model m = Sexp.List (Sexp.of_string_many (Model.to_string m))
+
+    type t = Unsat | Sat of model option Lazy.t | Unknown of string
+    [@@deriving sexp_of]
   end
 
   module Solver = struct
@@ -202,7 +239,6 @@ module Make (C : Context) = struct
     let bigint i = (sort, mk_numeral_s ctx (Z.to_string i))
     let ( mod ) (_, x) (_, y) = (sort, mk_mod ctx x y)
     let rem (_, x) (_, y) = (sort, mk_rem ctx x y)
-    let to_real (_, x) = (Type.Real, mk_int2real ctx x)
   end
 
   module Real = struct
@@ -218,6 +254,7 @@ module Make (C : Context) = struct
 
     let const = Term.const Type.Real
     let to_int (_, x) = (Type.Int, mk_real2int ctx x)
+    let of_int (_, x) = (Type.Real, Arithmetic.Integer.mk_int2real ctx x)
   end
 
   module Pseudo_bool = struct
@@ -241,5 +278,75 @@ module Make (C : Context) = struct
     let ( || ) x y = Int.(x + y > int 0)
     let not x = Term.cast sort Int.(int 1 - to_int x)
     let ( ==> ) x y = Int.(x <= y)
+  end
+
+  module T2 = struct
+    type ('a1, 'a2, 'b1, 'b2) t = ('a1 * 'a2, [ `Tuple of 'b1 * 'b2 ]) Term.t
+
+    let create (t1, x1) (t2, x2) =
+      let t = Type.Tuple_2 (t1, t2) in
+      let s = Type.to_sort t in
+      let mk = Tuple.get_mk_decl s in
+      (t, Expr.mk_app ctx mk [ x1; x2 ])
+
+    let get1 (t, x) =
+      let s = Type.to_sort t in
+      match t with
+      | Type.Tuple_2 (t1, _) -> (
+          ( t1,
+            match Tuple.get_field_decls s with
+            | [ f; _ ] -> Expr.mk_app ctx f [ x ]
+            | _ -> assert false ))
+      | _ -> .
+
+    let get2 (t, x) =
+      let s = Type.to_sort t in
+      match t with
+      | Type.Tuple_2 (_, t2) -> (
+          ( t2,
+            match Tuple.get_field_decls s with
+            | [ _; f ] -> Expr.mk_app ctx f [ x ]
+            | _ -> assert false ))
+      | _ -> .
+
+    let of_tuple (x, x') = create x x'
+    let to_tuple x = (get1 x, get2 x)
+  end
+
+  module Array = struct
+    type ('a1, 'a2, 'b1, 'b2) t = ('a1 -> 'a2, [ `Array of 'b1 * 'b2 ]) Term.t
+
+    let get (t, x) (_, x') =
+      match t with
+      | Type.Array (_, t'') -> (t'', Z3.Z3Array.mk_select ctx x x')
+      | _ -> .
+
+    let set (t, x) (_, x') (_, x'') = (t, Z3.Z3Array.mk_store ctx x x' x'')
+  end
+
+  module Model = struct
+    type t = Z3.Model.model
+
+    let conv_bool v =
+      match Z3.Boolean.get_bool_value v with
+      | Z3enums.L_TRUE -> Some true
+      | Z3enums.L_FALSE -> Some false
+      | Z3enums.L_UNDEF -> None
+
+    let conv_int v = Z.of_string @@ Z3.Arithmetic.Integer.numeral_to_string v
+
+    let conv (type a b) (t : (a, b) Type.t) v : a option =
+      match t with
+      | Type.Int -> Some (conv_int v)
+      | Bool -> conv_bool v
+      | Real -> Some (Q.of_string @@ Z3.Arithmetic.Real.numeral_to_string v)
+      | Pseudo_bool ->
+          let x = conv_int v in
+          if Z.equal x Z.zero then Some false
+          else if Z.equal x Z.one then Some true
+          else None
+      | _ -> failwith "unsupported"
+
+    let eval m (t, e) = Option.bind (Z3.Model.eval m e true) ~f:(conv t)
   end
 end
