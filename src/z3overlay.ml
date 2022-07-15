@@ -21,6 +21,8 @@ module Make (C : Context) = struct
           ('a1, 'b1) t * ('a2, 'b2) t
           -> ('a1 -> 'a2, [ `Array of 'b1 * 'b2 ]) t
 
+    let compare = Poly.compare
+
     let rec sexp_of_t : type a b. (a, b) t -> Sexp.t = function
       | Int -> Atom "Int"
       | Real -> Atom "Real"
@@ -48,6 +50,17 @@ module Make (C : Context) = struct
 
   module Term = struct
     type ('a, 'b) t = ('a, 'b) Type.t * Z3.Expr.expr
+
+    let compare (t, x) (t', x') =
+      let cmp = Type.compare t t' in
+      if cmp = 0 then Z3.Expr.compare x x' else cmp
+
+    let sexp_of_t (t, x) =
+      Sexp.List
+        [
+          Type.sexp_of_t t;
+          Sexp.of_string @@ Z3.AST.to_sexpr @@ Z3.Expr.ast_of_expr x;
+        ]
 
     let simplify ?params (t, x) = (t, Expr.simplify x params)
     let const t n = (t, Expr.mk_fresh_const ctx n (Type.to_sort t))

@@ -19,7 +19,8 @@ module Make (C : Context) : sig
           -> ('a1 -> 'a2, [ `Array of 'b1 * 'b2 ]) t
 
     val sexp_of_t : (_, _) t -> Sexp.t
-    val to_sort : ('a, 'b) t -> Z3.Sort.sort
+    val compare : ('a, 'b) t -> ('a, 'b) t -> int
+    val to_sort : (_, _) t -> Z3.Sort.sort
   end
 
   module Status : sig
@@ -30,11 +31,13 @@ module Make (C : Context) : sig
   module rec Term : sig
     type ('a, 'b) t
 
+    val sexp_of_t : (_, _) t -> Sexp.t
+    val compare : ('a, 'b) t -> ('a, 'b) t -> int
     val simplify : ?params:Z3.Params.params -> ('a, 'b) t -> ('a, 'b) t
     val const : ('a, 'b) Type.t -> string -> ('a, 'b) t
     val ( = ) : ('a, 'b) t -> ('a, 'b) t -> (bool, [ `Bool ]) Term.t
-    val distinct : ('a, 'b) t list -> (bool, [ `Bool ]) Term.t
-    val to_string : ('a, 'b) t -> string
+    val distinct : (_, _) t list -> (bool, [ `Bool ]) Term.t
+    val to_string : (_, _) t -> string
 
     val forall :
       ('a, 'b) Type.t -> (('a, 'b) t -> (bool, [ `Bool ]) t) -> (bool, [ `Bool ]) t
