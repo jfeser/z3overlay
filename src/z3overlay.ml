@@ -48,6 +48,8 @@ module Make (C : Context) = struct
           Z3.Z3Array.mk_sort ctx s s'
   end
 
+  open Type
+
   module Term = struct
     type ('a, 'b) t = ('a, 'b) Type.t * Z3.Expr.expr
 
@@ -64,11 +66,11 @@ module Make (C : Context) = struct
 
     let simplify ?params (t, x) = (t, Expr.simplify x params)
     let const t n = (t, Expr.mk_fresh_const ctx n (Type.to_sort t))
-    let ( = ) (_, x) (_, y) = (Type.Bool, Boolean.mk_eq ctx x y)
+    let ( = ) (_, x) (_, y) = (Bool, Boolean.mk_eq ctx x y)
     let to_string (_, x) = Z3.Expr.to_string x
     let raw (_, x) = x
     let raws = List.map ~f:raw
-    let distinct xs = (Type.Bool, Boolean.mk_distinct ctx (raws xs))
+    let distinct xs = (Bool, Boolean.mk_distinct ctx (raws xs))
     let cast s (_, e) = (s, e)
 
     let mk_quantifier is_forall t f =
@@ -80,10 +82,16 @@ module Make (C : Context) = struct
           None
         |> Z3.Quantifier.expr_of_quantifier
       in
-      (Type.Bool, q)
+      (Bool, q)
 
     let forall t f = mk_quantifier true t f
     let exists t f = mk_quantifier false t f
+  end
+
+  module type Value = sig
+    type value
+    type kind
+    type t = (value, kind) Term.t
   end
 
   module Status = struct
@@ -127,6 +135,25 @@ module Make (C : Context) = struct
   val translate : solver -> context -> solver
   val to_string : solver -> string
     *)
+    module Params = struct
+      type t = {
+        stats : bool option;
+        timeout : int option;
+        unsat_core : bool option;
+      }
+      [@@deriving sexp]
+
+      let create ?stats ?timeout ?unsat_core () = { stats; timeout; unsat_core }
+
+      let to_params p =
+        let open Z3.Params in
+        let params = mk_params ctx in
+        Option.iter p.stats ~f:(add_bool params (Symbol.mk_string ctx "stats"));
+        Option.iter p.timeout ~f:(add_int params (Symbol.mk_string ctx "timeout"));
+        Option.iter p.unsat_core
+          ~f:(add_bool params (Symbol.mk_string ctx "unsat_core"));
+        params
+    end
 
     type t = solver
 
@@ -134,9 +161,9 @@ module Make (C : Context) = struct
     let sexp_of_t x = [%sexp_of: string] (to_string x)
 
     let create ?params () =
-      match params with
-      | Some ps -> mk_solver_s ctx ps
-      | None -> mk_simple_solver ctx
+      let s = mk_simple_solver ctx in
+      Option.iter params ~f:(fun p -> Solver.set_parameters s (Params.to_params p));
+      s
 
     let push = push
     let pop ?(n = 1) s = pop s n
@@ -194,20 +221,22 @@ module Make (C : Context) = struct
   end
 
   module Bool = struct
-    type t = (bool, [ `Bool ]) Term.t
+    type value = bool
+    type kind = [ `Bool ]
+    type t = (value, kind) Term.t
 
-    let const = Term.const Type.Bool
-    let true_ = (Type.Bool, Boolean.mk_true ctx)
-    let false_ = (Type.Bool, Boolean.mk_false ctx)
-    let bool x = (Type.Bool, Boolean.mk_val ctx x)
-    let not (_, x) = (Type.Bool, Boolean.mk_not ctx x)
+    let const = Term.const Bool
+    let true_ = (Bool, Boolean.mk_true ctx)
+    let false_ = (Bool, Boolean.mk_false ctx)
+    let bool x = (Bool, Boolean.mk_val ctx x)
+    let not (_, x) = (Bool, Boolean.mk_not ctx x)
     let ite (_, x1) (t, x2) (_, x3) = (t, Boolean.mk_ite ctx x1 x2 x3)
-    let ( <=> ) (_, x1) (_, x2) = (Type.Bool, Boolean.mk_iff ctx x1 x2)
-    let ( ==> ) (_, x1) (_, x2) = (Type.Bool, Boolean.mk_implies ctx x1 x2)
-    let xor (_, x1) (_, x2) = (Type.Bool, Boolean.mk_xor ctx x1 x2)
-    let and_ xs = (Type.Bool, Boolean.mk_and ctx (List.map xs ~f:(fun (_, x) -> x)))
+    let ( <=> ) (_, x1) (_, x2) = (Bool, Boolean.mk_iff ctx x1 x2)
+    let ( ==> ) (_, x1) (_, x2) = (Bool, Boolean.mk_implies ctx x1 x2)
+    let xor (_, x1) (_, x2) = (Bool, Boolean.mk_xor ctx x1 x2)
+    let and_ xs = (Bool, Boolean.mk_and ctx (List.map xs ~f:(fun (_, x) -> x)))
     let ( && ) x y = and_ [ x; y ]
-    let or_ xs = (Type.Bool, Boolean.mk_or ctx (List.map xs ~f:(fun (_, x) -> x)))
+    let or_ xs = (Bool, Boolean.mk_or ctx (List.map xs ~f:(fun (_, x) -> x)))
     let ( || ) x y = or_ [ x; y ]
   end
 
@@ -220,10 +249,10 @@ module Make (C : Context) = struct
     open Arithmetic
     open S
 
-    let ( < ) (_, x) (_, y) = (Type.Bool, mk_lt ctx x y)
-    let ( <= ) (_, x) (_, y) = (Type.Bool, mk_le ctx x y)
-    let ( > ) (_, x) (_, y) = (Type.Bool, mk_gt ctx x y)
-    let ( >= ) (_, x) (_, y) = (Type.Bool, mk_ge ctx x y)
+    let ( < ) (_, x) (_, y) = (Bool, mk_lt ctx x y)
+    let ( <= ) (_, x) (_, y) = (Bool, mk_le ctx x y)
+    let ( > ) (_, x) (_, y) = (Bool, mk_gt ctx x y)
+    let ( >= ) (_, x) (_, y) = (Bool, mk_ge ctx x y)
     let ( ** ) (_, x) (_, y) = (sort, mk_power ctx x y)
     let add xs = (sort, mk_add ctx (Term.raws xs))
     let ( + ) x y = add [ x; y ]
@@ -238,16 +267,18 @@ module Make (C : Context) = struct
   module Int = struct
     open Arithmetic.Integer
 
-    type t = (Z.t, [ `Int ]) Term.t
+    type value = Z.t
+    type kind = [ `Int ]
+    type t = (value, kind) Term.t
 
     include Num (struct
-      type sort = (Z.t, [ `Int ]) Type.t
+      type sort = (value, kind) Type.t
 
-      let sort = Type.Int
+      let sort = Int
     end)
 
-    let sort = Type.Int
-    let const = Term.const Type.Int
+    let sort = Int
+    let const = Term.const Int
     let int i = (sort, mk_numeral_i ctx i)
     let bigint i = (sort, mk_numeral_s ctx (Z.to_string i))
     let ( mod ) (_, x) (_, y) = (sort, mk_mod ctx x y)
@@ -257,26 +288,30 @@ module Make (C : Context) = struct
   module Real = struct
     open Arithmetic.Real
 
-    type t = (Q.t, [ `Real ]) Term.t
+    type value = Q.t
+    type kind = [ `Real ]
+    type t = (value, kind) Term.t
 
     include Num (struct
       type sort = (Q.t, [ `Real ]) Type.t
 
-      let sort = Type.Real
+      let sort = Real
     end)
 
-    let const = Term.const Type.Real
-    let to_int (_, x) = (Type.Int, mk_real2int ctx x)
-    let of_int (_, x) = (Type.Real, Arithmetic.Integer.mk_int2real ctx x)
+    let const = Term.const Real
+    let to_int (_, x) = (Int, mk_real2int ctx x)
+    let of_int (_, x) = (Real, Arithmetic.Integer.mk_int2real ctx x)
   end
 
   module Pseudo_bool = struct
-    type t = (bool, [ `Pseudo_bool ]) Term.t
+    type value = bool
+    type kind = [ `Pseudo_bool ]
+    type t = (value, kind) Term.t
 
-    let sort = Type.Pseudo_bool
+    let sort = Pseudo_bool
 
     let const s n =
-      let v = Term.const Type.Pseudo_bool n in
+      let v = Term.const Pseudo_bool n in
       Solver.add s [ Bool.(Int.(int 0 <= v) && Int.(v <= int 1)) ];
       v
 
@@ -297,7 +332,7 @@ module Make (C : Context) = struct
     type ('a1, 'a2, 'b1, 'b2) t = ('a1 * 'a2, [ `Tuple of 'b1 * 'b2 ]) Term.t
 
     let create (t1, x1) (t2, x2) =
-      let t = Type.Tuple_2 (t1, t2) in
+      let t = Tuple_2 (t1, t2) in
       let s = Type.to_sort t in
       let mk = Tuple.get_mk_decl s in
       (t, Expr.mk_app ctx mk [ x1; x2 ])
@@ -305,7 +340,7 @@ module Make (C : Context) = struct
     let get1 (t, x) =
       let s = Type.to_sort t in
       match t with
-      | Type.Tuple_2 (t1, _) -> (
+      | Tuple_2 (t1, _) -> (
           ( t1,
             match Tuple.get_field_decls s with
             | [ f; _ ] -> Expr.mk_app ctx f [ x ]
@@ -315,7 +350,7 @@ module Make (C : Context) = struct
     let get2 (t, x) =
       let s = Type.to_sort t in
       match t with
-      | Type.Tuple_2 (_, t2) -> (
+      | Tuple_2 (_, t2) -> (
           ( t2,
             match Tuple.get_field_decls s with
             | [ _; f ] -> Expr.mk_app ctx f [ x ]
@@ -324,21 +359,49 @@ module Make (C : Context) = struct
 
     let of_tuple (x, x') = create x x'
     let to_tuple x = (get1 x, get2 x)
+
+    module M (L : sig
+      type value
+      type kind
+    end) (R : sig
+      type value
+      type kind
+    end) =
+    struct
+      type value = L.value * R.value
+      type kind = [ `Tuple of L.kind * R.kind ]
+      type nonrec t = (L.value, R.value, L.kind, R.kind) t
+    end
   end
 
   module Array = struct
     type ('a1, 'a2, 'b1, 'b2) t = ('a1 -> 'a2, [ `Array of 'b1 * 'b2 ]) Term.t
 
+    let const t t' = Term.const (Array (t, t'))
+
     let get (t, x) (_, x') =
-      match t with
-      | Type.Array (_, t'') -> (t'', Z3.Z3Array.mk_select ctx x x')
-      | _ -> .
+      match t with Array (_, t'') -> (t'', Z3.Z3Array.mk_select ctx x x') | _ -> .
 
     let set (t, x) (_, x') (_, x'') = (t, Z3.Z3Array.mk_store ctx x x' x'')
+
+    module M (K : sig
+      type value
+      type kind
+    end) (V : sig
+      type value
+      type kind
+    end) =
+    struct
+      type value = K.value -> V.value
+      type kind = [ `Array of K.kind * V.kind ]
+      type nonrec t = (K.value, V.value, K.kind, V.kind) t
+    end
   end
 
   module Model = struct
     type t = Z3.Model.model
+
+    let sexp_of_t m = Sexp.of_string (Z3.Model.to_string m)
 
     let conv_bool v =
       match Z3.Boolean.get_bool_value v with
@@ -350,7 +413,7 @@ module Make (C : Context) = struct
 
     let conv (type a b) (t : (a, b) Type.t) v : a option =
       match t with
-      | Type.Int -> Some (conv_int v)
+      | Int -> Some (conv_int v)
       | Bool -> conv_bool v
       | Real -> Some (Q.of_string @@ Z3.Arithmetic.Real.numeral_to_string v)
       | Pseudo_bool ->
@@ -362,4 +425,23 @@ module Make (C : Context) = struct
 
     let eval m (t, e) = Option.bind (Z3.Model.eval m e true) ~f:(conv t)
   end
+
+  let bool = Bool.bool
+  let int = Int.int
+  let ( = ) = Term.( = )
+  let not (_, x) = (Bool, Boolean.mk_not ctx x)
+  let ( <=> ) (_, x1) (_, x2) = (Bool, Boolean.mk_iff ctx x1 x2)
+  let ( ==> ) (_, x1) (_, x2) = (Bool, Boolean.mk_implies ctx x1 x2)
+  let ( && ) x y = Bool.and_ [ x; y ]
+  let ( || ) x y = Bool.or_ [ x; y ]
+  let ( < ) = Int.( < )
+  let ( <= ) = Int.( <= )
+  let ( > ) = Int.( > )
+  let ( >= ) = Int.( >= )
+  let ( ** ) = Int.( ** )
+  let ( + ) = Int.( + )
+  let ( - ) = Int.( - )
+  let ( * ) = Int.( * )
+  let ( / ) = Int.( / )
+  let ( ~- ) = Int.( ~- )
 end

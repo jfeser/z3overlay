@@ -46,8 +46,14 @@ module Make (C : Context) : sig
       ('a, 'b) Type.t -> (('a, 'b) t -> (bool, [ `Bool ]) t) -> (bool, [ `Bool ]) t
   end
 
+  module type Value = sig
+    type value
+    type kind
+    type t = (value, kind) Term.t
+  end
+
   module Bool : sig
-    type t = (bool, [ `Bool ]) Term.t
+    include Value with type value = bool and type kind = [ `Bool ]
 
     val const : string -> t
     val true_ : t
@@ -65,8 +71,7 @@ module Make (C : Context) : sig
   end
 
   module Int : sig
-    type t = (Z.t, [ `Int ]) Term.t
-
+    include Value with type value = Z.t and type kind = [ `Int ]
     include Num_intf.S with type t := t and type bool := Bool.t
 
     val const : string -> t
@@ -77,8 +82,7 @@ module Make (C : Context) : sig
   end
 
   module Real : sig
-    type t = (Q.t, [ `Real ]) Term.t
-
+    include Value with type value = Q.t and type kind = [ `Real ]
     include Num_intf.S with type t := t and type bool := Bool.t
 
     val const : string -> t
@@ -89,6 +93,9 @@ module Make (C : Context) : sig
   module Array : sig
     type ('a1, 'a2, 'b1, 'b2) t = ('a1 -> 'a2, [ `Array of 'b1 * 'b2 ]) Term.t
 
+    val const :
+      ('a1, 'b1) Type.t -> ('a2, 'b2) Type.t -> string -> ('a1, 'a2, 'b1, 'b2) t
+
     val get : ('a1, 'a2, 'b1, 'b2) t -> ('a1, 'b1) Term.t -> ('a2, 'b2) Term.t
 
     val set :
@@ -96,19 +103,45 @@ module Make (C : Context) : sig
       ('a1, 'b1) Term.t ->
       ('a2, 'b2) Term.t ->
       ('a1, 'a2, 'b1, 'b2) t
+
+    module M (A : Value) (B : Value) :
+      Value
+        with type value = A.value -> B.value
+         and type kind = [ `Array of A.kind * B.kind ]
+  end
+
+  module T2 : sig
+    type ('a1, 'a2, 'b1, 'b2) t = ('a1 * 'a2, [ `Tuple of 'b1 * 'b2 ]) Term.t
+
+    val create : ('a1, 'b1) Term.t -> ('a2, 'b2) Term.t -> ('a1, 'a2, 'b1, 'b2) t
+    val get1 : ('a, _, 'b, _) t -> ('a, 'b) Term.t
+    val get2 : (_, 'a, _, 'b) t -> ('a, 'b) Term.t
+    val of_tuple : ('a1, 'b1) Term.t * ('a2, 'b2) Term.t -> ('a1, 'a2, 'b1, 'b2) t
+    val to_tuple : ('a1, 'a2, 'b1, 'b2) t -> ('a1, 'b1) Term.t * ('a2, 'b2) Term.t
+
+    module M (A : Value) (B : Value) :
+      Value
+        with type value = A.value * B.value
+         and type kind = [ `Tuple of A.kind * B.kind ]
   end
 
   module Model : sig
-    type t = Z3.Model.model
+    type t = Z3.Model.model [@@deriving sexp_of]
 
     val eval : t -> ('a, _) Term.t -> 'a option
   end
 
   module Solver : sig
+    module Params : sig
+      type t [@@deriving sexp]
+
+      val create : ?stats:bool -> ?timeout:int -> ?unsat_core:bool -> unit -> t
+    end
+
     type t = Z3.Solver.solver [@@deriving sexp_of]
 
     val to_string : t -> string
-    val create : ?params:string -> unit -> t
+    val create : ?params:Params.t -> unit -> t
     val push : t -> unit
     val pop : ?n:int -> t -> unit
     val reset : t -> unit
@@ -140,4 +173,23 @@ module Make (C : Context) : sig
     val add : t -> Bool.t list -> unit
     val check : t -> Bool.t list -> Status.t
   end
+
+  val bool : bool -> Bool.t
+  val int : int -> Int.t
+  val ( = ) : ('a, 'b) Term.t -> ('a, 'b) Term.t -> Bool.t
+  val not : Bool.t -> Bool.t
+  val ( <=> ) : Bool.t -> Bool.t -> Bool.t
+  val ( ==> ) : Bool.t -> Bool.t -> Bool.t
+  val ( && ) : Bool.t -> Bool.t -> Bool.t
+  val ( || ) : Bool.t -> Bool.t -> Bool.t
+  val ( < ) : Int.t -> Int.t -> Bool.t
+  val ( <= ) : Int.t -> Int.t -> Bool.t
+  val ( > ) : Int.t -> Int.t -> Bool.t
+  val ( >= ) : Int.t -> Int.t -> Bool.t
+  val ( ** ) : Int.t -> Int.t -> Int.t
+  val ( + ) : Int.t -> Int.t -> Int.t
+  val ( - ) : Int.t -> Int.t -> Int.t
+  val ( * ) : Int.t -> Int.t -> Int.t
+  val ( / ) : Int.t -> Int.t -> Int.t
+  val ( ~- ) : Int.t -> Int.t
 end
